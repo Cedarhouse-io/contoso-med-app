@@ -1,0 +1,118 @@
+# This workflow will do a clean installation of node dependencies, cache/restore them, build the source code and run tests across different versions of node
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-nodejs
+
+# Define the name of the workflow
+name: CI/CD Pipeline for React Front-End
+
+# Specify the events that will trigger the workflow
+on:
+  push: # Trigger on push events
+    branches: [main] # Only for pushes to the main branch
+    paths: # Only when changes occur in the specified path
+      - 'contoso-med-app/**'
+  pull_request: # Trigger on pull request events
+    branches: [main] # Only for PRs to the main branch
+    paths: # Only when changes occur in the specified path
+      - 'contoso-med-app/**'
+  workflow_dispatch: # Allow manual trigger of the workflow
+    inputs:
+      environment: # Define an input parameter for the workflow
+        description: 'Deploy to environment' # Description of the input
+        required: true # Make this input required
+        default: 'staging' # Default value if not specified
+
+# Define the jobs to be run as part of this workflow
+jobs:
+  setup: # Job for setting up the environment
+    runs-on: ubuntu-latest # Specify the type of runner that the job will run on
+    outputs: 
+      cache-key: ${{ steps.cache-dependencies.outputs.cache-key }} # Output the cache key for later use
+    steps: # Steps to be performed as part of this job
+      - uses: actions/checkout@v3 # Check out the repository code
+      - name: Cache node modules # Name of the step for clarity
+        uses: actions/cache@v2 # Use GitHub's cache action to cache dependencies
+        id: cache-dependencies # ID for this step to reference its outputs
+        with: 
+          path: |
+            contoso-med-app/node_modules # Path to cache
+          key: ${{ runner.os }}-node-${{ hashFiles('contoso-med-app/package-lock.json') }} # Cache key
+          restore-keys: | # Keys for restoring cache
+            ${{ runner.os }}-node-
+
+  lint: # Job for linting the code
+    needs: setup # This job needs the setup job to complete first
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16.x'
+      - name: Load Cached Dependencies
+        uses: actions/cache@v2
+        with:
+          path: |
+            contoso-med-app/node_modules
+          key: ${{ needs.setup.outputs.cache-key }}
+      - run: npm run lint --prefix contoso-med-app
+
+  security-scan: # Job for security scanning
+    needs: setup # Depends on setup job
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16.x'
+      - name: Load Cached Dependencies
+        uses: actions/cache@v2
+        with:
+          path: |
+            contoso-med-app/node_modules
+          key: ${{ needs.setup.outputs.cache-key }}
+      - run: npm audit --production --prefix contoso-med-app
+      - uses: actions/github-script@v5 # Use GitHub Script to automate GitHub workflows
+        if: github.event_name == 'pull_request' # Only if the event is a pull request
+        with:
+          script: |
+            github.issues.createComment({ # Automatically post a comment on the PR
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '🚀 Linting and security scanning completed'
+            })
+
+  build-and-test: # Job for building and testing the app
+    needs: [lint, security-scan] # Depends on lint and security-scan jobs
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [14.x, 16.x, 18.x] # Run tests across multiple Node.js versions
+    steps:
+      - uses: actions/checkout@v3
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+      - run: npm ci --prefix contoso-med-app
+      - run: npm run build --if-present --prefix contoso-med-app
+      - run: npm test --prefix contoso-med-app
+
+  deploy: # Job for deploying the app
+    needs: build-and-test # Depends on build-and-test job
+    if: github.ref == 'refs/heads/main' && github.event.inputs.environment == 'production' # Condition for running this job
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Build
+        run: npm run build --prefix contoso-med-app
+      - name: Deploy to Azure Static Web Apps
+        uses: Azure/static-web-apps-deploy@v1 # Use Azure action to deploy the app
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }} # Use a secret token for authentication
+          app_location: "/contoso-med-app"
+          output_location: "build"
+      - name: Post-deployment Monitoring Setup
+        run: echo "Post-deployment monitoring and alerting setup will be integrated here."
